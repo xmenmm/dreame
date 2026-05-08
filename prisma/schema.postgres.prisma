@@ -1,0 +1,271 @@
+// PostgreSQL variant of the schema.
+// Use this for production deploy. Steps:
+//   1. cp prisma/schema.postgres.prisma prisma/schema.prisma
+//   2. Set DATABASE_URL=postgresql://... in .env (Supabase/Neon/Railway)
+//   3. npx prisma migrate dev --name init
+//   4. npx prisma db seed (re-seeds packs + sample data)
+//
+// Note: SQLite-only field defaults removed. Native enums could be added but kept as String
+// for portability; switch to enums later if needed.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  username        String    @unique
+  passwordHash    String
+  displayName     String
+  avatarUrl       String?
+  bio             String?
+  role            String    @default("reader")
+  coinBalance     Int       @default(50)
+  isVerified      Boolean   @default(false)
+  isBanned        Boolean   @default(false)
+  birthYear       Int?
+  locale          String    @default("id")
+  loginStreak     Int       @default(0)
+  lastLoginAt     DateTime?
+  lastDailyClaim  DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  novels          Novel[]        @relation("AuthorNovels")
+  bookmarks       Bookmark[]
+  comments        Comment[]
+  history         ReadingHistory[]
+  transactions    CoinTransaction[]
+  unlocks         ChapterUnlock[]
+  ratings         Rating[]
+  following       Follow[]      @relation("Follower")
+  followers       Follow[]      @relation("Following")
+  notifications   Notification[]
+  reportsMade     Report[]      @relation("Reporter")
+  reportsReceived Report[]      @relation("ReportedUser")
+}
+
+model Genre {
+  id      String  @id @default(cuid())
+  name    String  @unique
+  slug    String  @unique
+  novels  NovelGenre[]
+}
+
+model Novel {
+  id            String   @id @default(cuid())
+  slug          String   @unique
+  title         String
+  synopsis      String
+  coverUrl      String
+  bannerUrl     String?
+  status        String   @default("ongoing")
+  language      String   @default("id")
+  contentRating String   @default("everyone")
+  authorId      String
+  author        User     @relation("AuthorNovels", fields: [authorId], references: [id])
+  freeChapters  Int      @default(3)
+  coinPerChapter Int     @default(2)
+  views         Int      @default(0)
+  rating        Float    @default(0)
+  ratingCount   Int      @default(0)
+  isFeatured    Boolean  @default(false)
+  publishedAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  chapters     Chapter[]
+  genres       NovelGenre[]
+  bookmarks    Bookmark[]
+  comments     Comment[]
+  history      ReadingHistory[]
+  ratings      Rating[]
+
+  @@index([status, publishedAt])
+  @@index([isFeatured])
+}
+
+model NovelGenre {
+  novelId String
+  genreId String
+  novel   Novel @relation(fields: [novelId], references: [id], onDelete: Cascade)
+  genre   Genre @relation(fields: [genreId], references: [id], onDelete: Cascade)
+  @@id([novelId, genreId])
+}
+
+model Chapter {
+  id          String   @id @default(cuid())
+  novelId     String
+  novel       Novel    @relation(fields: [novelId], references: [id], onDelete: Cascade)
+  number      Int
+  title       String
+  content     String
+  wordCount   Int      @default(0)
+  isPublished Boolean  @default(true)
+  publishedAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  unlocks     ChapterUnlock[]
+  comments    Comment[]
+
+  @@unique([novelId, number])
+  @@index([novelId, isPublished])
+}
+
+model CoinTransaction {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  amount      Int
+  kind        String
+  reference   String?
+  provider    String?
+  providerRef String?
+  meta        String?
+  createdAt   DateTime @default(now())
+  @@index([userId, createdAt])
+}
+
+model ChapterUnlock {
+  id        String   @id @default(cuid())
+  userId    String
+  chapterId String
+  user      User    @relation(fields: [userId], references: [id])
+  chapter   Chapter @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  coinsSpent Int
+  createdAt DateTime @default(now())
+  @@unique([userId, chapterId])
+  @@index([userId])
+}
+
+model Bookmark {
+  id        String   @id @default(cuid())
+  userId    String
+  novelId   String
+  user      User    @relation(fields: [userId], references: [id])
+  novel     Novel   @relation(fields: [novelId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  @@unique([userId, novelId])
+}
+
+model ReadingHistory {
+  id              String   @id @default(cuid())
+  userId          String
+  novelId         String
+  lastChapter     Int
+  user            User    @relation(fields: [userId], references: [id])
+  novel           Novel   @relation(fields: [novelId], references: [id], onDelete: Cascade)
+  updatedAt       DateTime @updatedAt
+  @@unique([userId, novelId])
+  @@index([userId, updatedAt])
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  userId    String
+  novelId   String?
+  chapterId String?
+  parentId  String?
+  body      String
+  isHidden  Boolean  @default(false)
+  user      User    @relation(fields: [userId], references: [id])
+  novel     Novel?  @relation(fields: [novelId], references: [id], onDelete: Cascade)
+  chapter   Chapter? @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  parent    Comment? @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies   Comment[] @relation("CommentReplies")
+  createdAt DateTime @default(now())
+  @@index([novelId, createdAt])
+  @@index([chapterId, createdAt])
+  @@index([parentId])
+}
+
+model Rating {
+  id        String   @id @default(cuid())
+  userId    String
+  novelId   String
+  score     Int
+  user      User    @relation(fields: [userId], references: [id])
+  novel     Novel   @relation(fields: [novelId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([userId, novelId])
+  @@index([novelId])
+}
+
+model Follow {
+  followerId  String
+  followingId String
+  follower    User @relation("Follower", fields: [followerId], references: [id], onDelete: Cascade)
+  following   User @relation("Following", fields: [followingId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  @@id([followerId, followingId])
+  @@index([followingId, createdAt])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String
+  title     String
+  body      String?
+  link      String?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  @@index([userId, isRead, createdAt])
+}
+
+model Report {
+  id            String   @id @default(cuid())
+  reporterId    String
+  reporter      User    @relation("Reporter", fields: [reporterId], references: [id])
+  reportedUserId String?
+  reportedUser  User?   @relation("ReportedUser", fields: [reportedUserId], references: [id])
+  targetType    String
+  targetId      String
+  reason        String
+  detail        String?
+  status        String   @default("pending")
+  resolvedAt    DateTime?
+  resolverNote  String?
+  createdAt     DateTime @default(now())
+  @@index([status, createdAt])
+  @@index([targetType, targetId])
+}
+
+model CoinPack {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  coins       Int
+  bonus       Int      @default(0)
+  priceIDR    Int
+  iapAndroid  String?
+  iapApple    String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+}
+
+model PaymentOrder {
+  id          String   @id @default(cuid())
+  userId      String
+  packId      String
+  amountIDR   Int
+  coinsAmount Int
+  provider    String
+  providerRef String?
+  status      String   @default("pending")
+  paidAt      DateTime?
+  meta        String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  @@index([userId, status])
+  @@index([providerRef])
+}

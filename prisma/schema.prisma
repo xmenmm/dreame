@@ -1,0 +1,356 @@
+// Dreame database schema — novel platform (web + mobile via shared REST API)
+// Dev: SQLite. Prod: switch to PostgreSQL by changing provider + DATABASE_URL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ── Users & auth ─────────────────────────────────────────────
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  username        String    @unique
+  passwordHash    String
+  displayName     String
+  avatarUrl       String?
+  bio             String?
+  role            String    @default("reader") // reader | writer | admin
+  coinBalance     Int       @default(50)        // free starter coins
+  isVerified      Boolean   @default(false)
+  isBanned        Boolean   @default(false)
+  birthYear       Int?                          // for age gate (>=18)
+  gender          String?                       // male | female | other | prefer-not-to-say
+  preferredGenres String?                       // JSON array of genre slugs
+  onboardedAt     DateTime?                     // null = needs to complete onboarding
+  locale          String    @default("id")
+  loginStreak     Int       @default(0)
+  lastLoginAt     DateTime?
+  lastDailyClaim  DateTime?
+  readingStreak   Int       @default(0)         // consecutive days user actually read
+  lastReadAt      DateTime?
+  referralCode    String?   @unique             // user's own shareable code
+  referredByUserId String?                      // who referred this user
+  referrer        User?     @relation("UserReferrals", fields: [referredByUserId], references: [id])
+  referrals       User[]    @relation("UserReferrals")
+  referralRewardGranted Boolean @default(false) // bonus already paid to referrer
+  failedLoginCount Int      @default(0)
+  lockedUntil     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  novels          Novel[]        @relation("AuthorNovels")
+  bookmarks       Bookmark[]
+  comments        Comment[]
+  history         ReadingHistory[]
+  transactions    CoinTransaction[]
+  unlocks         ChapterUnlock[]
+  ratings         Rating[]
+  following       Follow[]      @relation("Follower")
+  followers       Follow[]      @relation("Following")
+  notifications   Notification[]
+  reportsMade     Report[]      @relation("Reporter")
+  reportsReceived Report[]      @relation("ReportedUser")
+  achievements    Achievement[]
+  dailyChallenges DailyChallenge[]
+  quotes          Quote[]
+}
+
+// ── Content ──────────────────────────────────────────────────
+
+model Genre {
+  id      String  @id @default(cuid())
+  name    String  @unique
+  slug    String  @unique
+  novels  NovelGenre[]
+}
+
+model Novel {
+  id            String   @id @default(cuid())
+  slug          String   @unique
+  title         String
+  synopsis      String
+  coverUrl      String
+  bannerUrl     String?
+  status        String   @default("ongoing")  // ongoing | completed | hiatus
+  language      String   @default("id")       // id | en
+  contentRating String   @default("everyone") // everyone | teen | mature
+  authorId      String
+  author        User     @relation("AuthorNovels", fields: [authorId], references: [id])
+  freeChapters  Int      @default(3)          // first N chapters free
+  coinPerChapter Int     @default(2)
+  views         Int      @default(0)
+  rating        Float    @default(0)
+  ratingCount   Int      @default(0)
+  isFeatured    Boolean  @default(false)
+  publishedAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  chapters     Chapter[]
+  genres       NovelGenre[]
+  bookmarks    Bookmark[]
+  comments     Comment[]
+  history      ReadingHistory[]
+  ratings      Rating[]
+  quotes       Quote[]
+
+  @@index([status, publishedAt])
+  @@index([isFeatured])
+}
+
+model NovelGenre {
+  novelId String
+  genreId String
+  novel   Novel @relation(fields: [novelId], references: [id], onDelete: Cascade)
+  genre   Genre @relation(fields: [genreId], references: [id], onDelete: Cascade)
+  @@id([novelId, genreId])
+}
+
+model Chapter {
+  id          String   @id @default(cuid())
+  novelId     String
+  novel       Novel    @relation(fields: [novelId], references: [id], onDelete: Cascade)
+  number      Int                              // chapter order, 1-indexed
+  title       String
+  content     String                           // markdown / HTML
+  wordCount   Int      @default(0)
+  isPublished Boolean  @default(true)
+  publishedAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  unlocks     ChapterUnlock[]
+  comments    Comment[]
+  quotes      Quote[]
+
+  @@unique([novelId, number])
+  @@index([novelId, isPublished])
+}
+
+// ── Coin economy ────────────────────────────────────────────
+
+model CoinTransaction {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  amount      Int                                 // positive = credit, negative = debit
+  kind        String                              // topup | unlock | reward | refund | payout
+  reference   String?                             // chapterId / receipt id
+  provider    String?                             // midtrans | google_play | app_store | admin
+  providerRef String?                             // gateway transaction id
+  meta        String?                             // JSON blob
+  createdAt   DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model ChapterUnlock {
+  id        String   @id @default(cuid())
+  userId    String
+  chapterId String
+  user      User    @relation(fields: [userId], references: [id])
+  chapter   Chapter @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  coinsSpent Int
+  createdAt DateTime @default(now())
+
+  @@unique([userId, chapterId])
+  @@index([userId])
+}
+
+// ── Reader features ─────────────────────────────────────────
+
+model Bookmark {
+  id        String   @id @default(cuid())
+  userId    String
+  novelId   String
+  user      User    @relation(fields: [userId], references: [id])
+  novel     Novel   @relation(fields: [novelId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, novelId])
+}
+
+model Quote {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  novelId   String
+  novel     Novel    @relation(fields: [novelId], references: [id], onDelete: Cascade)
+  chapterId String
+  chapter   Chapter  @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  body      String                                // the highlighted text
+  note      String?                               // optional user note
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([novelId])
+}
+
+model DailyChallenge {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date        String                              // YYYY-MM-DD in user's local day
+  kind        String                              // read_chapter | read_minutes (extensible)
+  target      Int                                 // goal count
+  progress    Int       @default(0)
+  reward      Int                                 // coin amount
+  completedAt DateTime?
+  claimedAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@unique([userId, date])
+  @@index([userId, date])
+}
+
+model ReadingHistory {
+  id              String   @id @default(cuid())
+  userId          String
+  novelId         String
+  lastChapter     Int
+  scrollPos       Int      @default(0)         // last scroll Y in current chapter (px)
+  user            User    @relation(fields: [userId], references: [id])
+  novel           Novel   @relation(fields: [novelId], references: [id], onDelete: Cascade)
+  updatedAt       DateTime @updatedAt
+
+  @@unique([userId, novelId])
+  @@index([userId, updatedAt])
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  userId    String
+  novelId   String?
+  chapterId String?
+  parentId  String?
+  body      String
+  isHidden  Boolean  @default(false)
+  user      User    @relation(fields: [userId], references: [id])
+  novel     Novel?  @relation(fields: [novelId], references: [id], onDelete: Cascade)
+  chapter   Chapter? @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  parent    Comment? @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies   Comment[] @relation("CommentReplies")
+  createdAt DateTime @default(now())
+
+  @@index([novelId, createdAt])
+  @@index([chapterId, createdAt])
+  @@index([parentId])
+}
+
+// ── Engagement ───────────────────────────────────────────────
+
+model Rating {
+  id        String   @id @default(cuid())
+  userId    String
+  novelId   String
+  score     Int                                 // 1..5
+  title     String?                             // optional review headline
+  body      String?                             // optional review text
+  user      User    @relation(fields: [userId], references: [id])
+  novel     Novel   @relation(fields: [novelId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, novelId])
+  @@index([novelId])
+}
+
+model Achievement {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  code        String                              // e.g. first_read, streak_7, bookworm, patron, ...
+  unlockedAt  DateTime @default(now())
+
+  @@unique([userId, code])
+  @@index([userId, unlockedAt])
+}
+
+model Follow {
+  followerId  String
+  followingId String
+  follower    User @relation("Follower", fields: [followerId], references: [id], onDelete: Cascade)
+  following   User @relation("Following", fields: [followingId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+
+  @@id([followerId, followingId])
+  @@index([followingId, createdAt])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String                              // chapter_new | comment_reply | follow | system | reward
+  title     String
+  body      String?
+  link      String?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, isRead, createdAt])
+}
+
+model Report {
+  id            String   @id @default(cuid())
+  reporterId    String
+  reporter      User    @relation("Reporter", fields: [reporterId], references: [id])
+  reportedUserId String?
+  reportedUser  User?   @relation("ReportedUser", fields: [reportedUserId], references: [id])
+  targetType    String                          // novel | chapter | comment | user
+  targetId      String
+  reason        String                          // spam | nsfw | copyright | hate | other
+  detail        String?
+  status        String   @default("pending")    // pending | reviewing | resolved | dismissed
+  resolvedAt    DateTime?
+  resolverNote  String?
+  createdAt     DateTime @default(now())
+
+  @@index([status, createdAt])
+  @@index([targetType, targetId])
+}
+
+// ── Monetization ─────────────────────────────────────────────
+
+model CoinPack {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  coins       Int
+  bonus       Int      @default(0)
+  priceIDR    Int                                 // for Midtrans (web)
+  iapAndroid  String?                             // Google Play product ID
+  iapApple    String?                             // App Store product ID
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+}
+
+model SiteConfig {
+  key       String   @id
+  value     String                              // JSON blob
+  updatedAt DateTime @updatedAt
+}
+
+model PaymentOrder {
+  id          String   @id @default(cuid())
+  userId      String
+  packId      String
+  amountIDR   Int
+  coinsAmount Int
+  provider    String                              // midtrans | google_play | app_store
+  providerRef String?
+  status      String   @default("pending")        // pending | paid | failed | expired
+  paidAt      DateTime?
+  meta        String?                             // JSON
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId, status])
+  @@index([providerRef])
+}
